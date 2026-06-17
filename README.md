@@ -219,4 +219,4 @@ The original planning loop logic did not detail specific waist sizes (e.g. "W30"
 ---
 
 ## Demo Video Section
-Demo video: [link to be added]
+Demo video: [Loom Video Link](https://www.loom.com/share/317f6d93f38c4ce6bb72d73b6cd6855d)
