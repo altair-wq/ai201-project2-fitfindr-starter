@@ -62,39 +62,135 @@ def run_agent(query: str, wardrobe: dict) -> dict:
         The session dict after the interaction completes. Check session["error"]
         first — if it is not None, the interaction ended early and the other
         output fields (outfit_suggestion, fit_card) will be None.
-
-    TODO — implement this function using the planning loop you designed in planning.md:
-
-        Step 1: Initialize the session with _new_session().
-
-        Step 2: Parse the user's query to extract a description, size, and
-                max_price. You can use regex, string splitting, or ask the LLM
-                to parse it — document your choice in planning.md.
-                Store the result in session["parsed"].
-
-        Step 3: Call search_listings() with the parsed parameters.
-                Store results in session["search_results"].
-                If no results: set session["error"] to a helpful message and
-                return the session early. Do NOT proceed to suggest_outfit
-                with empty input.
-
-        Step 4: Select the item to use (e.g., the top result).
-                Store it in session["selected_item"].
-
-        Step 5: Call suggest_outfit() with the selected item and wardrobe.
-                Store the result in session["outfit_suggestion"].
-
-        Step 6: Call create_fit_card() with the outfit suggestion and selected item.
-                Store the result in session["fit_card"].
-
-        Step 7: Return the session.
-
-    Before writing code, complete the Planning Loop and State Management sections
-    of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    import re
+
+    # 1. Parsing Helper Functions
+    def parse_size(q_str: str) -> str | None:
+        q = q_str.lower()
+        m = re.search(r'\bsize\s*[:\-]?\s*([a-z0-9/\-]+)', q)
+        if m:
+            val = m.group(1).strip()
+            return val.upper() if len(val) <= 3 else val
+            
+        for size_word in ["double extra small", "extra small", "small", "medium", "large", "extra large", "oversized"]:
+            if re.search(r'\b' + re.escape(size_word) + r'\b', q):
+                return size_word
+                
+        for size_abbr in ["xxs", "xs", "s", "m", "l", "xl", "xxl"]:
+            if re.search(r'\b' + size_abbr + r'\b', q):
+                return size_abbr.upper()
+                
+        m_waist = re.search(r'\bw(\d{2})\b', q)
+        if m_waist:
+            return f"W{m_waist.group(1)}"
+            
+        return None
+
+    def parse_price(q_str: str) -> float | None:
+        q = q_str.lower()
+        pattern = r'(?:under|below|less\s+than)\s*\$?(\d+(?:\.\d+)?)'
+        m = re.search(pattern, q)
+        if m:
+            return float(m.group(1))
+        return None
+
+    def parse_description(q_str: str) -> str:
+        q = q_str.strip()
+        prefixes = [
+            r"^i'm looking for a\s+",
+            r"^i'm looking for\s+",
+            r"^looking for a\s+",
+            r"^looking for\s+",
+            r"^find me a\s+",
+            r"^find me\s+",
+            r"^search for a\s+",
+            r"^search for\s+",
+            r"^i want a\s+",
+            r"^i want\s+"
+        ]
+        for pref in prefixes:
+            q_new = re.sub(pref, "", q, flags=re.IGNORECASE)
+            if q_new != q:
+                q = q_new
+                break
+                
+        separators = [
+            r"\bunder\b",
+            r"\bbelow\b",
+            r"\bless than\b",
+            r"\bsize\b",
+            r"\bin size\b",
+            r",",
+            r"\.",
+            r"\bi mostly wear\b",
+            r"\bi wear\b",
+            r"\bwith\b"
+        ]
+        
+        split_idx = len(q)
+        for sep in separators:
+            m = re.search(sep, q, flags=re.IGNORECASE)
+            if m and m.start() < split_idx:
+                split_idx = m.start()
+                
+        desc = q[:split_idx].strip()
+        
+        if not desc:
+            clean_q = q_str
+            clean_q = re.sub(r'(?:under|below|less\s+than)\s*\$?\d+(?:\.\d+)?', '', clean_q, flags=re.IGNORECASE)
+            clean_q = re.sub(r'\bsize\s*[:\-]?\s*[a-z0-9/\-]+', '', clean_q, flags=re.IGNORECASE)
+            clean_q = re.sub(r'[,.]', ' ', clean_q)
+            desc = " ".join(clean_q.split())
+            
+        return desc
+
+    # Step 1: Initialize the session with _new_session().
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: Parse parameters and store them.
+    desc = parse_description(query)
+    size = parse_size(query)
+    price = parse_price(query)
+
+    session["description"] = desc
+    session["size"] = size
+    session["max_price"] = price
+    session["parsed"] = {
+        "description": desc,
+        "size": size,
+        "max_price": price
+    }
+
+    # Step 3: Call search_listings() with the parsed parameters.
+    results = search_listings(desc, size=size, max_price=price)
+    session["search_results"] = results
+
+    # Step 4: If no results, stop early.
+    if not results:
+        session["error"] = "No listings found matching your description. Try loosening your size, price, or description filters."
+        return session
+
+    # Step 5: Select the top item.
+    session["selected_item"] = results[0]
+
+    # Step 6: Call suggest_outfit().
+    outfit_suggestion = suggest_outfit(session["selected_item"], wardrobe)
+    session["outfit_suggestion"] = outfit_suggestion
+
+    if not outfit_suggestion or outfit_suggestion.startswith("Error"):
+        session["error"] = "Failed to suggest outfit."
+        return session
+
+    # Step 7: Call create_fit_card().
+    fit_card = create_fit_card(outfit_suggestion, session["selected_item"])
+    session["fit_card"] = fit_card
+
+    if not fit_card or fit_card.startswith("Error"):
+        session["error"] = "Failed to generate fit card."
+        return session
+
+    # Step 8: Return the session.
     return session
 
 
@@ -121,3 +217,13 @@ if __name__ == "__main__":
         wardrobe=get_example_wardrobe(),
     )
     print(f"Error message: {session2['error']}")
+    print(f"Selected item: {session2['selected_item']}")
+    print(f"Outfit suggestion: {session2['outfit_suggestion']}")
+    print(f"Fit card: {session2['fit_card']}")
+    
+    # Confirm requirements for no-results path:
+    assert session2["error"] is not None, "Error is not set!"
+    assert session2["selected_item"] is None, "Selected item should be None!"
+    assert session2["outfit_suggestion"] is None, "Outfit suggestion should be None!"
+    assert session2["fit_card"] is None, "Fit card should be None!"
+    print("\nAssertions passed: early exit verified successfully.")
